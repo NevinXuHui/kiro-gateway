@@ -398,6 +398,90 @@ class StatusScreen(Screen):
         self.dismiss()
 
 
+class AddTokenScreen(Screen):
+    """添加Token屏幕"""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消", priority=True),
+        Binding("ctrl+s", "save", "保存", priority=True),
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def compose(self) -> ComposeResult:
+        with Container(id="add-token-dialog"):
+            yield Static("添加新 Token (粘贴 JSON)", id="add-token-title")
+
+            yield Static("请粘贴完整的 Token JSON 数据（单行）：", id="add-token-instruction")
+
+            yield Input(
+                placeholder='{"refreshToken":"...","clientId":"...","clientSecret":"..."}',
+                id="json-input"
+            )
+
+            with Horizontal(id="add-token-buttons"):
+                yield Button("解析并保存 (Ctrl+S)", variant="success", id="btn-save")
+                yield Button("取消 (ESC)", variant="default", id="btn-cancel")
+
+            yield Static("提示: 必需字段为 refreshToken, clientId, clientSecret (email 和 region 可选)", id="add-token-hint")
+            yield Static("粘贴方法: Ctrl+Shift+V 或 鼠标右键粘贴", id="add-token-paste-hint")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-save":
+            self.action_save()
+        elif event.button.id == "btn-cancel":
+            self.action_cancel()
+
+    def action_save(self) -> None:
+        # 获取JSON输入
+        json_text = self.query_one("#json-input", Input).value.strip()
+
+        if not json_text:
+            self.app.push_screen(StatusScreen("错误", "请输入 JSON 数据", is_error=True))
+            return
+
+        # 解析JSON
+        try:
+            token_data = json.loads(json_text)
+        except json.JSONDecodeError as e:
+            self.app.push_screen(StatusScreen("JSON 解析错误", f"无效的 JSON 格式: {e}", is_error=True))
+            return
+
+        # 验证必填字段（只需要这三个核心字段）
+        required_fields = ["refreshToken", "clientId", "clientSecret"]
+        missing_fields = [field for field in required_fields if not token_data.get(field)]
+
+        if missing_fields:
+            self.app.push_screen(
+                StatusScreen("缺少必填字段", f"缺少以下字段: {', '.join(missing_fields)}", is_error=True)
+            )
+            return
+
+        # 构建token对象，提供默认值
+        new_token = {
+            "refreshToken": token_data["refreshToken"],
+            "clientId": token_data["clientId"],
+            "clientSecret": token_data["clientSecret"],
+            "email": token_data.get("email", ""),  # 可选，刷新后会获取
+            "region": token_data.get("region", "us-east-1"),  # 默认 us-east-1
+            "authMethod": token_data.get("authMethod", "IdC"),
+            "provider": token_data.get("provider", "BuilderId"),
+            "accessToken": "",  # 将通过刷新获取
+            "expiresAt": "",    # 将通过刷新获取
+        }
+
+        # 保留其他可能存在的字段
+        for key, value in token_data.items():
+            if key not in new_token:
+                new_token[key] = value
+
+        self.dismiss(new_token)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class ConfirmScreen(Screen):
     """确认对话框"""
 
@@ -485,6 +569,7 @@ class TokenConverterScreen(Screen):
         Binding("escape", "back", "返回", priority=True),
         Binding("r", "refresh_token", "刷新 Token", priority=True),
         Binding("c", "convert", "转换并保存", priority=True),
+        Binding("a", "add_token", "添加 Token", priority=True),
     ]
 
     def __init__(self, **kwargs):
@@ -507,6 +592,7 @@ class TokenConverterScreen(Screen):
             yield DataTable(id="token-table")
             yield Static("", id="token-details")
             with Horizontal(id="actions"):
+                yield Button("添加 Token (A)", variant="primary", id="btn-add")
                 yield Button("刷新 Token (R)", variant="primary", id="btn-refresh")
                 yield Button("转换并保存 (C)", variant="success", id="btn-convert")
                 yield Button("返回 (ESC)", variant="default", id="btn-back")
@@ -540,7 +626,7 @@ class TokenConverterScreen(Screen):
     def setup_table(self) -> None:
         table = self.query_one("#token-table", DataTable)
         table.cursor_type = "row"
-        table.add_columns("序号", "状态", "邮箱", "过期时间", "区域", "订阅类型", "")
+        table.add_columns("序号", "状态", "邮箱", "过期时间", "区域", "订阅类型", "使用限额", "Client ID", "")
 
         now = datetime.now(datetime.now().astimezone().tzinfo)
         current_refresh_token = self.current_credentials.get('refreshToken') if self.current_credentials else None
@@ -554,6 +640,16 @@ class TokenConverterScreen(Screen):
             is_current = token.get('refreshToken') == current_refresh_token if current_refresh_token else False
             marker = "当前使用" if is_current else ""
 
+            # 使用限额显示
+            if 'usageLimit' in token:
+                usage = token['usageLimit']
+                usage_display = f"{usage['used']}/{usage['limit']}"
+            else:
+                usage_display = "N/A"
+
+            # Client ID 显示（截断）
+            client_id_display = token.get('clientId', 'N/A')[:20]
+
             table.add_row(
                 str(idx),
                 status,
@@ -561,6 +657,8 @@ class TokenConverterScreen(Screen):
                 token['expiresAt'][:19],
                 token['region'],
                 token.get('subscriptionTitle', 'N/A')[:20],
+                usage_display,
+                client_id_display,
                 marker,
                 key=str(idx)
             )
@@ -593,6 +691,16 @@ class TokenConverterScreen(Screen):
             is_current = token.get('refreshToken') == current_refresh_token if current_refresh_token else False
             marker = "当前使用" if is_current else ""
 
+            # 使用限额显示
+            if 'usageLimit' in token:
+                usage = token['usageLimit']
+                usage_display = f"{usage['used']}/{usage['limit']}"
+            else:
+                usage_display = "N/A"
+
+            # Client ID 显示（截断）
+            client_id_display = token.get('clientId', 'N/A')[:20]
+
             table.add_row(
                 str(idx),
                 status,
@@ -600,6 +708,8 @@ class TokenConverterScreen(Screen):
                 token['expiresAt'][:19],
                 token['region'],
                 token.get('subscriptionTitle', 'N/A')[:20],
+                usage_display,
+                client_id_display,
                 marker,
                 key=str(idx)
             )
@@ -665,12 +775,74 @@ Client ID: {token['clientId'][:40]}...
         self.query_one("#token-details", Static).update(details)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-refresh":
+        if event.button.id == "btn-add":
+            self.action_add_token()
+        elif event.button.id == "btn-refresh":
             self.action_refresh_token()
         elif event.button.id == "btn-convert":
             self.action_convert()
         elif event.button.id == "btn-back":
             self.action_back()
+
+    def action_add_token(self) -> None:
+        """添加新Token"""
+        def handle_add_result(new_token_data: Optional[Dict[str, Any]]) -> None:
+            if new_token_data:
+                self.add_and_refresh_token(new_token_data)
+
+        self.app.push_screen(AddTokenScreen(), handle_add_result)
+
+    def add_and_refresh_token(self, new_token_data: Dict[str, Any]) -> None:
+        """添加并刷新新Token"""
+        loading_screen = LoadingScreen("正在添加并刷新 Token...")
+        self.app.push_screen(loading_screen)
+
+        # 启动后台任务
+        self._do_add_and_refresh_token(loading_screen, new_token_data)
+
+    @work(exclusive=True, thread=True)
+    def _do_add_and_refresh_token(self, loading_screen: LoadingScreen, new_token_data: Dict[str, Any]) -> None:
+        """执行添加并刷新Token的后台任务"""
+        try:
+            # 步骤1: 刷新token获取accessToken和expiresAt
+            self.app.call_from_thread(loading_screen.update_message, "正在刷新 Token 获取访问令牌...")
+            refreshed_token = refresh_token(new_token_data)
+
+            # 步骤2: 添加到tokens列表
+            self.app.call_from_thread(loading_screen.update_message, "正在保存到文件...")
+            self.all_tokens.append(refreshed_token)
+
+            # 步骤3: 保存到文件
+            with open(self.source_file, 'w', encoding='utf-8') as f:
+                json.dump(self.all_tokens, f, indent=2, ensure_ascii=False)
+
+            # 步骤4: 重新加载并更新界面
+            self.app.call_from_thread(loading_screen.update_message, "正在更新界面...")
+            self.app.call_from_thread(self.load_tokens)
+            self.app.call_from_thread(self.refresh_table)
+
+            # 关闭加载屏幕
+            self.app.call_from_thread(self.app.pop_screen)
+
+            # 显示成功消息
+            message = f"""Token 添加成功
+
+邮箱: {refreshed_token.get('email', 'N/A')}
+区域: {refreshed_token['region']}
+过期时间: {refreshed_token['expiresAt']}
+Access Token: {refreshed_token['accessToken'][:30]}...
+"""
+            if 'usageLimit' in refreshed_token:
+                usage = refreshed_token['usageLimit']
+                message += f"\n使用限额: {usage['used']}/{usage['limit']} (剩余: {usage['remaining']})"
+
+            self.app.call_from_thread(self.app.push_screen, StatusScreen("添加成功", message))
+
+        except Exception as e:
+            # 关闭加载屏幕
+            self.app.call_from_thread(self.app.pop_screen)
+            # 显示错误消息
+            self.app.call_from_thread(self.app.push_screen, StatusScreen("添加失败", f"错误: {e}", is_error=True))
 
     def action_refresh_token(self) -> None:
         if not self.selected_token:
@@ -1188,6 +1360,81 @@ class KiroToolsApp(App):
         color: #888888;
         background: black;
         padding: 1 0 0 0;
+    }
+
+    #add-token-dialog {
+        width: 80;
+        height: auto;
+        padding: 1;
+        background: black;
+        border: solid white;
+        align: center middle;
+    }
+
+    #add-token-title {
+        text-align: center;
+        color: white;
+        background: black;
+        text-style: bold;
+        padding: 0 0 1 0;
+    }
+
+    #add-token-instruction {
+        color: #aaaaaa;
+        background: black;
+        padding: 0 0 1 0;
+    }
+
+    #json-input {
+        width: 100%;
+        border: solid white;
+        background: black;
+        color: white;
+    }
+
+    #json-input:focus {
+        border: solid #ffff00;
+    }
+
+    #add-token-paste-hint {
+        text-align: center;
+        color: #00ff00;
+        background: black;
+        padding: 0;
+        text-style: italic;
+    }
+
+    #add-token-buttons {
+        height: auto;
+        background: black;
+        padding: 1 0 0 0;
+    }
+
+    #add-token-buttons Button {
+        margin: 0 1;
+        color: white;
+        background: black;
+        border: solid white;
+    }
+
+    #add-token-buttons Button:hover {
+        background: #333333;
+        color: #aaaaaa;
+    }
+
+    #add-token-buttons Button:focus {
+        background: #555555;
+        color: #ffff00;
+        border: solid #ffff00;
+        text-style: bold;
+    }
+
+    #add-token-hint {
+        text-align: center;
+        color: #888888;
+        background: black;
+        padding: 1 0 0 0;
+        text-style: italic;
     }
 
     #status-message {
