@@ -6,6 +6,11 @@ loguru
 python-dotenv
 tiktoken
 
+# Utility scripts dependencies (convert_tokens.py, etc.)
+cbor2
+requests
+textual
+
 # Testing dependencies
 pytest
 pytest-asyncio

@@ -6,6 +6,8 @@
 .vscode/
 .idea/
 .shard/
+.history/
+.lh/
 
 # Python
 __pycache__/
@@ -16,9 +18,17 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+venv/
+.venv/
+env/
+ENV/
 
 # Debug logs (generated when DEBUG_MODE is enabled)
 debug_logs*/
+
+# Sensitive credentials and tokens
+kiro-credentials.json
+tokens_export.json
 debug*.json
 
 # Project-specific
