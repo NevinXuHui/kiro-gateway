@@ -16,6 +16,10 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+venv/
+.venv/
+env/
+ENV/
 
 # Debug logs (generated when DEBUG_MODE is enabled)
 debug_logs*/
@@ -24,6 +28,19 @@ debug*.json
 # Project-specific
 _notes/
 requests/
+
+# Credentials and tokens
+*-credentials.json
+*credentials*.json
+tokens_export.json
+*tokens*.json
+
+# Local development
+.history/
+.lh/
+.spec-workflow/
+run.sh
+convert_tokens.py
 
 # Testing
 .pytest_cache/
