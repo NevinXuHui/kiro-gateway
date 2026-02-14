@@ -836,6 +836,72 @@ class KiroAuthManager:
             await self._refresh_token_request()
             return self._access_token
     
+    def import_credentials(self, data: dict) -> dict:
+        """
+        Hot-reload credentials from imported JSON data.
+
+        Updates internal state and persists to kiro-credentials.json.
+        Returns a summary dict for the API response.
+
+        Args:
+            data: Parsed JSON dict with credential fields (camelCase keys).
+        """
+        if 'refreshToken' in data:
+            self._refresh_token = data['refreshToken']
+        if 'accessToken' in data:
+            self._access_token = data['accessToken']
+        if 'profileArn' in data:
+            self._profile_arn = data['profileArn']
+
+        if 'region' in data:
+            self._region = data['region']
+            self._refresh_url = get_kiro_refresh_url(self._region)
+            self._api_host = get_kiro_api_host(self._region)
+            self._q_host = get_kiro_q_host(self._region)
+            logger.info(f"Region updated via import: region={self._region}")
+
+        if 'clientIdHash' in data:
+            self._client_id_hash = data['clientIdHash']
+            self._load_enterprise_device_registration(self._client_id_hash)
+        if 'clientId' in data:
+            self._client_id = data['clientId']
+        if 'clientSecret' in data:
+            self._client_secret = data['clientSecret']
+
+        if 'expiresAt' in data:
+            try:
+                expires_str = data['expiresAt']
+                if expires_str.endswith('Z'):
+                    self._expires_at = datetime.fromisoformat(expires_str.replace('Z', '+00:00'))
+                else:
+                    self._expires_at = datetime.fromisoformat(expires_str)
+            except Exception as e:
+                logger.warning(f"Failed to parse expiresAt during import: {e}")
+
+        self._detect_auth_type()
+
+        # Persist to kiro-credentials.json
+        persist_path = Path("kiro-credentials.json")
+        try:
+            existing = {}
+            if persist_path.exists():
+                with open(persist_path, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+            existing.update(data)
+            with open(persist_path, 'w', encoding='utf-8') as f:
+                json.dump(existing, f, indent=2, ensure_ascii=False)
+            logger.info(f"Imported credentials saved to {persist_path}")
+        except Exception as e:
+            logger.error(f"Failed to save imported credentials: {e}")
+
+        return {
+            "auth_type": self._auth_type.value,
+            "region": self._region,
+            "token_valid": self._access_token is not None,
+            "api_host": self._api_host,
+            "q_host": self._q_host,
+        }
+
     @property
     def profile_arn(self) -> Optional[str]:
         """AWS CodeWhisperer profile ARN."""

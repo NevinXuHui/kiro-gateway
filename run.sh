@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Kiro Gateway 启动脚本
-# 用法: ./run.sh [--port PORT] [--host HOST]
+# 用法: ./run.sh [--port PORT] [--host HOST] [--no-ui]
 
 set -e
 
@@ -132,6 +132,64 @@ check_config() {
     fi
 }
 
+# 杀掉占用指定端口的旧进程
+kill_port() {
+    local port=$1
+    local label=$2
+    local pids
+    pids=$(lsof -ti :"$port" 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        print_warn "端口 $port ($label) 被占用，正在关闭旧进程..."
+        echo "$pids" | xargs kill -9 2>/dev/null || true
+        sleep 0.5
+        print_info "旧进程已关闭"
+    fi
+}
+
+# 设置并启动 Task UI 前端
+setup_task_ui() {
+    TASK_UI_DIR="task-ui"
+
+    if [ ! -d "$TASK_UI_DIR" ]; then
+        print_warn "task-ui 目录不存在，跳过前端启动"
+        return 1
+    fi
+
+    print_step "设置 Task UI 前端..."
+
+    # 检查 node
+    if ! command -v node &> /dev/null; then
+        print_warn "未找到 Node.js，跳过前端启动"
+        return 1
+    fi
+
+    # 检查 npm
+    if ! command -v npm &> /dev/null; then
+        print_warn "未找到 npm，跳过前端启动"
+        return 1
+    fi
+
+    # 安装依赖（如果 node_modules 不存在）
+    if [ ! -d "$TASK_UI_DIR/node_modules" ]; then
+        print_info "安装前端依赖..."
+        (cd "$TASK_UI_DIR" && npm install --silent)
+        print_info "前端依赖安装完成"
+    else
+        print_info "前端依赖已安装"
+    fi
+
+    # 关闭旧的前端进程
+    kill_port 5173 "Task UI"
+
+    # 后台启动 Vite dev server (0.0.0.0 = 局域网可访问)
+    print_info "启动 Task UI (http://0.0.0.0:5173)..."
+    (cd "$TASK_UI_DIR" && npx vite --host 0.0.0.0 &)
+    TASK_UI_PID=$!
+    print_info "Task UI 已启动 (PID: $TASK_UI_PID) — 局域网可通过内网 IP:5173 访问"
+
+    return 0
+}
+
 # 主函数
 main() {
     echo
@@ -139,6 +197,17 @@ main() {
     print_info "    Kiro Gateway 启动脚本"
     print_info "========================================="
     echo
+
+    # 解析 --no-ui 参数
+    WITH_UI=true
+    ARGS=()
+    for arg in "$@"; do
+        if [ "$arg" = "--no-ui" ]; then
+            WITH_UI=false
+        else
+            ARGS+=("$arg")
+        fi
+    done
 
     # 执行检查和设置
     check_python
@@ -149,14 +218,42 @@ main() {
     echo
     check_config
 
+    # 启动 Task UI（如果指定了 --with-ui）
+    TASK_UI_PID=""
+    if [ "$WITH_UI" = true ]; then
+        echo
+        setup_task_ui && true
+    fi
+
     echo
     print_info "========================================="
     print_info "    启动服务器..."
+    if [ "$WITH_UI" = true ] && [ -n "$TASK_UI_PID" ]; then
+        print_info "    Task UI: http://0.0.0.0:5173"
+    fi
     print_info "========================================="
     echo
 
-    # 传递所有参数给 main.py
-    python main.py "$@"
+    # 关闭旧的后端进程（根据传入参数解析端口，默认 8000）
+    BACKEND_PORT=8000
+    for i in "${!ARGS[@]}"; do
+        if [[ "${ARGS[$i]}" == "--port" || "${ARGS[$i]}" == "-p" ]]; then
+            BACKEND_PORT="${ARGS[$((i+1))]}"
+        fi
+    done
+    kill_port "$BACKEND_PORT" "Backend"
+
+    # 清理函数：退出时关闭 Task UI
+    cleanup() {
+        if [ -n "$TASK_UI_PID" ]; then
+            print_info "关闭 Task UI (PID: $TASK_UI_PID)..."
+            kill "$TASK_UI_PID" 2>/dev/null || true
+        fi
+    }
+    trap cleanup EXIT INT TERM
+
+    # 传递剩余参数给 main.py
+    python main.py "${ARGS[@]}"
 }
 
 # 运行主函数

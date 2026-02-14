@@ -27,6 +27,7 @@ Contains all API endpoints:
 """
 
 import json
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security
@@ -34,10 +35,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from loguru import logger
 
-from kiro.config import (
-    PROXY_API_KEY,
-    APP_VERSION,
-)
+from kiro.config import APP_VERSION
 from kiro.models_openai import (
     OpenAIModel,
     ModelList,
@@ -58,26 +56,40 @@ except ImportError:
     debug_logger = None
 
 
+def _record_history(request: Request, model: str, stream: bool, status_code: int, start_time: float, error: str = None):
+    """Record request to history store (best-effort, never raises)."""
+    try:
+        history = request.app.state.request_history
+        latency_ms = int((time.time() - start_time) * 1000)
+        history.record(
+            endpoint="/v1/chat/completions",
+            method="POST",
+            model=model,
+            stream=stream,
+            status_code=status_code,
+            latency_ms=latency_ms,
+            error=error,
+        )
+    except Exception:
+        pass
+
+
 # --- Security scheme ---
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
-async def verify_api_key(auth_header: str = Security(api_key_header)) -> bool:
+async def verify_api_key(request: Request, auth_header: str = Security(api_key_header)) -> bool:
     """
-    Verify API key in Authorization header.
-    
-    Expects format: "Bearer {PROXY_API_KEY}"
-    
-    Args:
-        auth_header: Authorization header value
-    
-    Returns:
-        True if key is valid
-    
-    Raises:
-        HTTPException: 401 if key is invalid or missing
+    Verify API key in Authorization header via ApiKeyManager.
+
+    Expects format: "Bearer {key}"
     """
-    if not auth_header or auth_header != f"Bearer {PROXY_API_KEY}":
+    if not auth_header or not auth_header.startswith("Bearer "):
+        logger.warning("Access attempt with invalid API key.")
+        raise HTTPException(status_code=401, detail="Invalid or missing API Key")
+    token = auth_header[7:]
+    manager = request.app.state.apikey_manager
+    if not manager.verify_key(token):
         logger.warning("Access attempt with invalid API key.")
         raise HTTPException(status_code=401, detail="Invalid or missing API Key")
     return True
@@ -170,7 +182,9 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         HTTPException: On validation or API errors
     """
     logger.info(f"Request to /v1/chat/completions (model={request_data.model}, stream={request_data.stream})")
-    
+
+    _req_start_time = time.time()
+
     auth_manager: KiroAuthManager = request.app.state.auth_manager
     model_cache: ModelInfoCache = request.app.state.model_cache
     
@@ -313,6 +327,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                 debug_logger.flush_on_error(response.status_code, error_message)
             
             # Return error in OpenAI API format
+            _record_history(request, request_data.model, request_data.stream, response.status_code, _req_start_time, error_message[:200])
             return JSONResponse(
                 status_code=response.status_code,
                 content={
@@ -360,6 +375,11 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
                     raise
                 finally:
                     await http_client.close()
+                    # Record request history
+                    if streaming_error:
+                        _record_history(request, request_data.model, True, 500, _req_start_time, str(streaming_error)[:200])
+                    else:
+                        _record_history(request, request_data.model, True, 200, _req_start_time)
                     # Log access log for streaming (success or error)
                     if streaming_error:
                         error_type = type(streaming_error).__name__
@@ -392,7 +412,10 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
             )
             
             await http_client.close()
-            
+
+            # Record request history
+            _record_history(request, request_data.model, False, 200, _req_start_time)
+
             # Log access log for non-streaming success
             logger.info(f"HTTP 200 - POST /v1/chat/completions (non-streaming) - completed")
             
@@ -404,6 +427,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
     
     except HTTPException as e:
         await http_client.close()
+        _record_history(request, request_data.model, request_data.stream, e.status_code, _req_start_time, str(e.detail)[:200])
         # Log access log for HTTP error
         logger.error(f"HTTP {e.status_code} - POST /v1/chat/completions - {e.detail}")
         # Flush debug logs on HTTP error ("errors" mode)
@@ -412,6 +436,7 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         raise
     except Exception as e:
         await http_client.close()
+        _record_history(request, request_data.model, request_data.stream, 500, _req_start_time, str(e)[:200])
         logger.error(f"Internal error: {e}", exc_info=True)
         # Log access log for internal error
         logger.error(f"HTTP 500 - POST /v1/chat/completions - {str(e)[:100]}")

@@ -40,6 +40,7 @@ Priority: CLI args > Environment variables > Default values
 """
 
 import argparse
+import json
 import logging
 import sys
 import os
@@ -78,8 +79,12 @@ from kiro.config import (
 from kiro.auth import KiroAuthManager
 from kiro.cache import ModelInfoCache
 from kiro.model_resolver import ModelResolver
+from kiro.store_apikeys import ApiKeyManager
+from kiro.store_history import RequestHistory
 from kiro.routes_openai import router as openai_router
 from kiro.routes_anthropic import router as anthropic_router
+from kiro.routes_tasks import router as tasks_router
+from kiro.routes_admin import router as admin_router
 from kiro.exceptions import validation_exception_handler
 from kiro.debug_middleware import DebugLoggerMiddleware
 
@@ -312,7 +317,13 @@ async def lifespan(app: FastAPI):
     concurrent requests efficiently (fixes issue #24).
     """
     logger.info("Starting application... Creating state managers.")
-    
+
+    # Initialize API Key Manager (multi-key support with JSON persistence)
+    app.state.apikey_manager = ApiKeyManager()
+
+    # Initialize Request History (in-memory FIFO, max 200 records)
+    app.state.request_history = RequestHistory()
+
     # Create shared HTTP client with connection pooling
     # This reduces memory usage and enables connection reuse across requests
     # Limits: max 100 total connections, max 20 keep-alive connections
@@ -465,6 +476,12 @@ app.include_router(openai_router)
 # Anthropic-compatible API: /v1/messages
 app.include_router(anthropic_router)
 
+# Task Management API: /v1/tasks
+app.include_router(tasks_router)
+
+# Admin API: /api/admin
+app.include_router(admin_router)
+
 
 # --- Uvicorn log config ---
 # Minimal configuration for redirecting uvicorn logs to loguru.
@@ -587,7 +604,7 @@ def resolve_server_config(args: argparse.Namespace) -> tuple[str, int]:
 def print_startup_banner(host: str, port: int) -> None:
     """
     Print a startup banner with server information.
-    
+
     Args:
         host: Server host address
         port: Server port
@@ -596,15 +613,42 @@ def print_startup_banner(host: str, port: int) -> None:
     GREEN = "\033[92m"
     CYAN = "\033[96m"
     YELLOW = "\033[93m"
+    RED = "\033[91m"
     WHITE = "\033[97m"
     BOLD = "\033[1m"
     DIM = "\033[2m"
     RESET = "\033[0m"
-    
+
     # Determine display URL
     display_host = "localhost" if host == "0.0.0.0" else host
     url = f"http://{display_host}:{port}"
-    
+
+    # Determine token source from config priority (same as lifespan)
+    if KIRO_CLI_DB_FILE:
+        token_source = f"SQLite DB ({KIRO_CLI_DB_FILE})"
+    elif KIRO_CREDS_FILE:
+        token_source = f"JSON File ({KIRO_CREDS_FILE})"
+    elif REFRESH_TOKEN:
+        token_source = "Env (REFRESH_TOKEN)"
+    else:
+        token_source = "Not configured"
+
+    # Read API keys from JSON file (read-only, no side effects)
+    api_keys_info: list[dict] = []
+    apikeys_path = Path("apikeys.json")
+    if apikeys_path.exists():
+        try:
+            data = json.loads(apikeys_path.read_text(encoding="utf-8"))
+            for entry in data.get("keys", []):
+                preview = entry["key"][:8] + "..." if len(entry.get("key", "")) > 8 else entry.get("key", "")
+                api_keys_info.append({
+                    "name": entry.get("name", "unnamed"),
+                    "preview": preview,
+                    "enabled": entry.get("enabled", True),
+                })
+        except Exception:
+            pass
+
     print()
     print(f"  {WHITE}{BOLD}👻 {APP_TITLE} v{APP_VERSION}{RESET}")
     print()
@@ -614,6 +658,16 @@ def print_startup_banner(host: str, port: int) -> None:
     print(f"  {DIM}API Docs:      {url}/docs{RESET}")
     print(f"  {DIM}Health Check:  {url}/health{RESET}")
     print()
+    print(f"  {DIM}{'─' * 48}{RESET}")
+    print(f"  {WHITE}🔑 Token Source:  {CYAN}{token_source}{RESET}")
+    if api_keys_info:
+        enabled_count = sum(1 for k in api_keys_info if k["enabled"])
+        print(f"  {WHITE}🔐 API Keys:     {CYAN}{len(api_keys_info)} total, {enabled_count} enabled{RESET}")
+        for k in api_keys_info:
+            status_icon = f"{GREEN}✓{RESET}" if k["enabled"] else f"{RED}✗{RESET}"
+            print(f"  {DIM}   {status_icon} {k['name']}{DIM}  {k['preview']}{RESET}")
+    else:
+        print(f"  {WHITE}🔐 API Keys:     {YELLOW}None (will seed from PROXY_API_KEY){RESET}")
     print(f"  {DIM}{'─' * 48}{RESET}")
     print(f"  {WHITE}💬 Found a bug? Need help? Have questions?{RESET}")
     print(f"  {YELLOW}➜  https://github.com/jwadow/kiro-gateway/issues{RESET}")

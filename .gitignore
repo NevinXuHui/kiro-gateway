@@ -39,3 +39,18 @@ requests/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Node
+node_modules/
+
+# Runtime data
+request_history.json
+apikeys.json
+
+# Build artifacts
+task-ui/dist/
+
+# Agent/tool state
+.claude/
+.omc/
+task-ui/.omc/

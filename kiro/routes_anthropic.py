@@ -26,6 +26,7 @@ Reference: https://docs.anthropic.com/en/api/messages
 """
 
 import json
+import time
 from typing import Optional
 
 import httpx
@@ -34,7 +35,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from loguru import logger
 
-from kiro.config import PROXY_API_KEY
 from kiro.models_anthropic import (
     AnthropicMessagesRequest,
     AnthropicMessagesResponse,
@@ -59,6 +59,24 @@ except ImportError:
     debug_logger = None
 
 
+def _record_history(request: Request, model: str, stream: bool, status_code: int, start_time: float, error: str = None):
+    """Record request to history store (best-effort, never raises)."""
+    try:
+        history = request.app.state.request_history
+        latency_ms = int((time.time() - start_time) * 1000)
+        history.record(
+            endpoint="/v1/messages",
+            method="POST",
+            model=model,
+            stream=stream,
+            status_code=status_code,
+            latency_ms=latency_ms,
+            error=error,
+        )
+    except Exception:
+        pass
+
+
 # --- Security scheme ---
 # Anthropic uses x-api-key header instead of Authorization: Bearer
 anthropic_api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
@@ -67,34 +85,29 @@ auth_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
 async def verify_anthropic_api_key(
+    request: Request,
     x_api_key: Optional[str] = Security(anthropic_api_key_header),
     authorization: Optional[str] = Security(auth_header)
 ) -> bool:
     """
-    Verify API key for Anthropic API.
-    
+    Verify API key for Anthropic API via ApiKeyManager.
+
     Supports two authentication methods:
     1. x-api-key header (Anthropic native)
     2. Authorization: Bearer header (for compatibility)
-    
-    Args:
-        x_api_key: Value from x-api-key header
-        authorization: Value from Authorization header
-    
-    Returns:
-        True if key is valid
-    
-    Raises:
-        HTTPException: 401 if key is invalid or missing
     """
+    manager = request.app.state.apikey_manager
+
     # Check x-api-key first (Anthropic native)
-    if x_api_key and x_api_key == PROXY_API_KEY:
+    if x_api_key and manager.verify_key(x_api_key):
         return True
-    
+
     # Fall back to Authorization: Bearer
-    if authorization and authorization == f"Bearer {PROXY_API_KEY}":
-        return True
-    
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        if manager.verify_key(token):
+            return True
+
     logger.warning("Access attempt with invalid API key (Anthropic endpoint)")
     raise HTTPException(
         status_code=401,
@@ -142,7 +155,9 @@ async def messages(
         HTTPException: On validation or API errors
     """
     logger.info(f"Request to /v1/messages (model={request_data.model}, stream={request_data.stream})")
-    
+
+    _req_start_time = time.time()
+
     if anthropic_version:
         logger.debug(f"Anthropic-Version header: {anthropic_version}")
     
@@ -346,6 +361,7 @@ async def messages(
                 debug_logger.flush_on_error(response.status_code, error_message)
             
             # Return error in Anthropic format
+            _record_history(request, request_data.model, request_data.stream, response.status_code, _req_start_time, error_message[:200])
             return JSONResponse(
                 status_code=response.status_code,
                 content={
@@ -384,6 +400,11 @@ async def messages(
                         pass
                 finally:
                     await http_client.close()
+                    # Record request history
+                    if streaming_error:
+                        _record_history(request, request_data.model, True, 500, _req_start_time, str(streaming_error)[:200])
+                    else:
+                        _record_history(request, request_data.model, True, 200, _req_start_time)
                     if streaming_error:
                         error_type = type(streaming_error).__name__
                         error_msg = str(streaming_error) if str(streaming_error) else "(empty message)"
@@ -419,7 +440,10 @@ async def messages(
             )
             
             await http_client.close()
-            
+
+            # Record request history
+            _record_history(request, request_data.model, False, 200, _req_start_time)
+
             logger.info(f"HTTP 200 - POST /v1/messages (non-streaming) - completed")
             
             if debug_logger:
@@ -429,12 +453,14 @@ async def messages(
     
     except HTTPException as e:
         await http_client.close()
+        _record_history(request, request_data.model, request_data.stream, e.status_code, _req_start_time, str(e.detail)[:200])
         logger.error(f"HTTP {e.status_code} - POST /v1/messages - {e.detail}")
         if debug_logger:
             debug_logger.flush_on_error(e.status_code, str(e.detail))
         raise
     except Exception as e:
         await http_client.close()
+        _record_history(request, request_data.model, request_data.stream, 500, _req_start_time, str(e)[:200])
         logger.error(f"Internal error: {e}", exc_info=True)
         logger.error(f"HTTP 500 - POST /v1/messages - {str(e)[:100]}")
         if debug_logger:
