@@ -179,13 +179,13 @@ setup_task_ui() {
     fi
 
     # 关闭旧的前端进程
-    kill_port 5173 "Task UI"
+    kill_port 8991 "Task UI"
 
     # 后台启动 Vite dev server (0.0.0.0 = 局域网可访问)
-    print_info "启动 Task UI (http://0.0.0.0:5173)..."
-    (cd "$TASK_UI_DIR" && npx vite --host 0.0.0.0 &)
+    print_info "启动 Task UI (http://0.0.0.0:8991)..."
+    (cd "$TASK_UI_DIR" && npx vite --host 0.0.0.0 --port 8991 &)
     TASK_UI_PID=$!
-    print_info "Task UI 已启动 (PID: $TASK_UI_PID) — 局域网可通过内网 IP:5173 访问"
+    print_info "Task UI 已启动 (PID: $TASK_UI_PID) — 局域网可通过内网 IP:8991 访问"
 
     return 0
 }
@@ -229,7 +229,7 @@ main() {
     print_info "========================================="
     print_info "    启动服务器..."
     if [ "$WITH_UI" = true ] && [ -n "$TASK_UI_PID" ]; then
-        print_info "    Task UI: http://0.0.0.0:5173"
+        print_info "    Task UI: http://0.0.0.0:8991"
     fi
     print_info "========================================="
     echo
