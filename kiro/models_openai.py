@@ -265,7 +265,7 @@ class ChatCompletionChunkChoice(BaseModel):
 class ChatCompletionChunk(BaseModel):
     """
     Streaming chunk in OpenAI format.
-    
+
     Attributes:
         id: Unique response ID
         object: Object type ("chat.completion.chunk")
@@ -276,6 +276,126 @@ class ChatCompletionChunk(BaseModel):
     """
     id: str
     object: str = "chat.completion.chunk"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str
+    choices: List[ChatCompletionChunkChoice]
+    usage: Optional[ChatCompletionUsage] = None
+
+
+# ==================================================================================================
+# Models for /v1/responses endpoint (OpenAI Codex Responses API)
+# ==================================================================================================
+
+class ResponseInputMessage(BaseModel):
+    """
+    Input message for Responses API (OpenAI Codex format).
+
+    Attributes:
+        type: Message type (always "message")
+        role: Sender role (user, assistant, system)
+        content: Message content (string or structured content)
+    """
+    type: str = "message"
+    role: str
+    content: Union[str, List[Any]]
+
+    model_config = {"extra": "allow"}
+
+
+class ResponseFormat(BaseModel):
+    """
+    Response format specification.
+
+    Attributes:
+        type: Format type ("text" or "json_object")
+    """
+    type: str = "text"
+
+
+class ResponsesRequest(BaseModel):
+    """
+    Request for OpenAI Codex Responses API (stateful conversation interface).
+
+    The Responses API provides a unified interface with SSE streaming events.
+
+    Attributes:
+        model: Model ID for generation
+        input: List of input messages in Codex format
+        previous_response_id: Optional ID to continue previous conversation
+        stream: Use streaming (default True for Codex API)
+        store: Store conversation state for future reference (default True)
+        metadata: Optional metadata to attach to the response
+        response_format: Response format specification
+        temperature: Generation temperature (0-2)
+        top_p: Top-p sampling
+        max_tokens: Maximum number of tokens in response
+        tools: List of available tools
+        tool_choice: Tool selection strategy
+    """
+    model: str
+    input: Annotated[List[ResponseInputMessage], Field(min_length=1)]
+    previous_response_id: Optional[str] = None
+    stream: bool = True  # Codex API defaults to streaming
+    store: bool = True
+    metadata: Optional[Dict[str, Any]] = None
+    response_format: Optional[ResponseFormat] = None
+
+    # Generation parameters
+    temperature: Optional[float] = None
+    top_p: Optional[float] = None
+    max_tokens: Optional[int] = None
+    max_completion_tokens: Optional[int] = None
+    stop: Optional[Union[str, List[str]]] = None
+
+    # Tools (function calling)
+    tools: Optional[List[Tool]] = None
+    tool_choice: Optional[Union[str, Dict]] = None
+
+    # Compatibility fields
+    presence_penalty: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    n: Optional[int] = 1
+    user: Optional[str] = None
+
+    model_config = {"extra": "allow"}
+
+
+class ResponsesResponse(BaseModel):
+    """
+    Response from OpenAI Codex Responses API (non-streaming).
+
+    Attributes:
+        id: Unique response ID (used as previous_response_id in next request)
+        object: Object type ("response")
+        created: Creation timestamp
+        model: Model used
+        choices: List of response variants
+        usage: Token usage information
+    """
+    id: str
+    object: str = "response"
+    created: int = Field(default_factory=lambda: int(time.time()))
+    model: str
+    choices: List[ChatCompletionChoice]
+    usage: ChatCompletionUsage
+
+
+class ResponsesChunk(BaseModel):
+    """
+    Streaming chunk for Codex Responses API.
+
+    Uses SSE event types like response.text.delta, response.done, etc.
+
+    Attributes:
+        id: Unique response ID
+        object: Object type ("response.chunk")
+        created: Creation timestamp
+        model: Model used
+        choices: List of variants
+        usage: Usage information (only in last chunk)
+    """
+    id: str
+    object: str = "response.chunk"
     created: int = Field(default_factory=lambda: int(time.time()))
     model: str
     choices: List[ChatCompletionChunkChoice]

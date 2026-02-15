@@ -324,6 +324,11 @@ async def lifespan(app: FastAPI):
     # Initialize Request History (in-memory FIFO, max 200 records)
     app.state.request_history = RequestHistory()
 
+    # Initialize Response State Store (for /v1/responses API stateful conversations)
+    from kiro.store_responses import ResponseStateStore
+    app.state.response_store = ResponseStateStore()
+    logger.info("Response state store initialized")
+
     # Create shared HTTP client with connection pooling
     # This reduces memory usage and enables connection reuse across requests
     # Limits: max 100 total connections, max 20 keep-alive connections

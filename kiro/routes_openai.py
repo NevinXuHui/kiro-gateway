@@ -28,6 +28,7 @@ Contains all API endpoints:
 
 import json
 import time
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security
@@ -40,6 +41,8 @@ from kiro.models_openai import (
     OpenAIModel,
     ModelList,
     ChatCompletionRequest,
+    ResponsesRequest,
+    ResponseInputMessage,
 )
 from kiro.auth import KiroAuthManager, AuthType
 from kiro.cache import ModelInfoCache
@@ -444,3 +447,295 @@ async def chat_completions(request: Request, request_data: ChatCompletionRequest
         if debug_logger:
             debug_logger.flush_on_error(500, str(e))
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
+
+
+@router.post("/v1/responses", dependencies=[Depends(verify_api_key)])
+async def responses(request: Request, request_data: ResponsesRequest):
+    """
+    OpenAI Responses API endpoint - stateful conversation interface.
+
+    Unifies Chat Completions and Assistants capabilities with stateful conversations.
+    Supports previous_response_id for automatic context management.
+
+    Args:
+        request: FastAPI Request for accessing app.state
+        request_data: Request in OpenAI ResponsesRequest format
+
+    Returns:
+        StreamingResponse for streaming mode
+        JSONResponse for non-streaming mode
+
+    Raises:
+        HTTPException: On validation or API errors
+    """
+    from kiro.models_openai import ResponsesRequest, ChatMessage
+
+    logger.info(f"Request to /v1/responses (model={request_data.model}, stream={request_data.stream}, previous_response_id={request_data.previous_response_id})")
+
+    _req_start_time = time.time()
+
+    auth_manager: KiroAuthManager = request.app.state.auth_manager
+    model_cache: ModelInfoCache = request.app.state.model_cache
+    response_store = request.app.state.response_store
+
+    # Build full message history
+    messages = []
+
+    # Load previous conversation if previous_response_id provided
+    if request_data.previous_response_id:
+        previous_state = response_store.get(request_data.previous_response_id)
+        if not previous_state:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Previous response ID not found: {request_data.previous_response_id}"
+            )
+        # Add previous messages
+        messages.extend(previous_state.get("messages", []))
+        logger.debug(f"Loaded {len(messages)} message(s) from previous response {request_data.previous_response_id}")
+
+    # Add new input messages (convert from Codex format to ChatMessage format)
+    for msg in request_data.input:
+        # Codex format: {"type": "message", "role": "user", "content": "..."}
+        # Convert to: {"role": "user", "content": "..."}
+        message_dict = {"role": msg.role, "content": msg.content}
+        messages.append(message_dict)
+
+    # Convert to ChatCompletionRequest format for reusing existing logic
+    from kiro.models_openai import ChatCompletionRequest
+    chat_request = ChatCompletionRequest(
+        model=request_data.model,
+        messages=[ChatMessage(**msg) for msg in messages],
+        stream=request_data.stream,
+        temperature=request_data.temperature,
+        top_p=request_data.top_p,
+        max_tokens=request_data.max_tokens or request_data.max_completion_tokens,
+        stop=request_data.stop,
+        tools=request_data.tools,
+        tool_choice=request_data.tool_choice,
+        presence_penalty=request_data.presence_penalty,
+        frequency_penalty=request_data.frequency_penalty,
+        n=request_data.n,
+        user=request_data.user,
+    )
+
+    # Generate conversation ID for Kiro API
+    conversation_id = generate_conversation_id()
+
+    # Build payload for Kiro
+    profile_arn_for_payload = ""
+    if auth_manager.auth_type == AuthType.KIRO_DESKTOP and auth_manager.profile_arn:
+        profile_arn_for_payload = auth_manager.profile_arn
+
+    try:
+        kiro_payload = build_kiro_payload(
+            chat_request,
+            conversation_id,
+            profile_arn_for_payload
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Create HTTP client
+    url = f"{auth_manager.api_host}/generateAssistantResponse"
+
+    if request_data.stream:
+        http_client = KiroHttpClient(auth_manager, shared_client=None)
+    else:
+        shared_client = request.app.state.http_client
+        http_client = KiroHttpClient(auth_manager, shared_client=shared_client)
+
+    try:
+        # Make request to Kiro API
+        response = await http_client.request_with_retry(
+            "POST",
+            url,
+            kiro_payload,
+            stream=True
+        )
+
+        if response.status_code != 200:
+            try:
+                error_content = await response.aread()
+            except Exception:
+                error_content = b"Unknown error"
+
+            await http_client.close()
+            error_text = error_content.decode('utf-8', errors='replace')
+
+            try:
+                error_json = json.loads(error_text)
+                from kiro.kiro_errors import enhance_kiro_error
+                error_info = enhance_kiro_error(error_json)
+                error_message = error_info.user_message
+            except (json.JSONDecodeError, KeyError):
+                error_message = error_text
+
+            _record_history(request, request_data.model, request_data.stream, response.status_code, _req_start_time, error_message[:200])
+            return JSONResponse(
+                status_code=response.status_code,
+                content={
+                    "error": {
+                        "message": error_message,
+                        "type": "kiro_api_error",
+                        "code": response.status_code
+                    }
+                }
+            )
+
+        # Prepare data for token counting
+        messages_for_tokenizer = [msg.model_dump() for msg in chat_request.messages]
+        tools_for_tokenizer = [tool.model_dump() for tool in chat_request.tools] if chat_request.tools else None
+
+        if request_data.stream:
+            # Streaming mode with Codex SSE event format
+            response_id = f"resp_{uuid.uuid4().hex}"
+            assistant_message_content = []
+            first_chunk = True
+
+            async def stream_wrapper():
+                nonlocal first_chunk
+                streaming_error = None
+                try:
+                    async for chunk in stream_kiro_to_openai(
+                        http_client.client,
+                        response,
+                        request_data.model,
+                        model_cache,
+                        auth_manager,
+                        request_messages=messages_for_tokenizer,
+                        request_tools=tools_for_tokenizer
+                    ):
+                        chunk_str = chunk.removeprefix("data: ")
+                        if chunk_str.strip() == "[DONE]":
+                            # Send response.done event
+                            done_event = {
+                                "type": "response.done",
+                                "response": {
+                                    "id": response_id,
+                                    "object": "response",
+                                    "status": "completed"
+                                }
+                            }
+                            yield f"event: response.done\ndata: {json.dumps(done_event)}\n\n"
+                        else:
+                            chunk_data = json.loads(chunk_str)
+
+                            # Send response.output_item.added on first chunk
+                            if first_chunk and chunk_data.get("choices"):
+                                first_chunk = False
+                                output_item_event = {
+                                    "type": "response.output_item.added",
+                                    "item": {
+                                        "id": f"item_{uuid.uuid4().hex[:8]}",
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "content": []
+                                    }
+                                }
+                                yield f"event: response.output_item.added\ndata: {json.dumps(output_item_event)}\n\n"
+
+                            # Send response.text.delta for content
+                            if chunk_data.get("choices"):
+                                delta_content = chunk_data["choices"][0].get("delta", {}).get("content")
+                                if delta_content:
+                                    assistant_message_content.append(delta_content)
+                                    text_delta_event = {
+                                        "type": "response.text.delta",
+                                        "delta": delta_content
+                                    }
+                                    yield f"event: response.text.delta\ndata: {json.dumps(text_delta_event)}\n\n"
+
+                                # Handle tool calls
+                                tool_calls = chunk_data["choices"][0].get("delta", {}).get("tool_calls")
+                                if tool_calls:
+                                    for tool_call in tool_calls:
+                                        if tool_call.get("function", {}).get("arguments"):
+                                            func_args_event = {
+                                                "type": "response.function_call_arguments.delta",
+                                                "delta": tool_call["function"]["arguments"],
+                                                "call_id": tool_call.get("id")
+                                            }
+                                            yield f"event: response.function_call_arguments.delta\ndata: {json.dumps(func_args_event)}\n\n"
+                except GeneratorExit:
+                    logger.debug("Client disconnected during streaming (GeneratorExit)")
+                except Exception as e:
+                    streaming_error = e
+                    # Send error event
+                    error_event = {
+                        "type": "response.error",
+                        "error": {
+                            "message": str(e),
+                            "type": "server_error"
+                        }
+                    }
+                    try:
+                        yield f"event: response.error\ndata: {json.dumps(error_event)}\n\n"
+                    except Exception:
+                        pass
+                    raise
+                finally:
+                    await http_client.close()
+
+                    # Store conversation state if requested
+                    if request_data.store and not streaming_error:
+                        full_assistant_content = "".join(assistant_message_content)
+                        updated_messages = messages + [{"role": "assistant", "content": full_assistant_content}]
+                        response_store.create(
+                            messages=updated_messages,
+                            model=request_data.model,
+                            metadata=request_data.metadata
+                        )
+
+                    if streaming_error:
+                        _record_history(request, request_data.model, True, 500, _req_start_time, str(streaming_error)[:200])
+                    else:
+                        _record_history(request, request_data.model, True, 200, _req_start_time)
+
+            return StreamingResponse(stream_wrapper(), media_type="text/event-stream")
+
+        else:
+            # Non-streaming mode
+            openai_response = await collect_stream_response(
+                http_client.client,
+                response,
+                request_data.model,
+                model_cache,
+                auth_manager,
+                request_messages=messages_for_tokenizer,
+                request_tools=tools_for_tokenizer
+            )
+
+            await http_client.close()
+
+            # Store conversation state if requested and get response_id
+            if request_data.store:
+                assistant_message = openai_response["choices"][0]["message"]
+                updated_messages = messages + [assistant_message]
+                response_id = response_store.create(
+                    messages=updated_messages,
+                    model=request_data.model,
+                    metadata=request_data.metadata
+                )
+            else:
+                response_id = f"resp_{uuid.uuid4().hex}"
+
+            # Convert to ResponsesResponse format
+            openai_response["object"] = "response"
+            openai_response["id"] = response_id
+
+            _record_history(request, request_data.model, False, 200, _req_start_time)
+            logger.info(f"HTTP 200 - POST /v1/responses (non-streaming) - completed")
+
+            return JSONResponse(content=openai_response)
+
+    except HTTPException as e:
+        await http_client.close()
+        _record_history(request, request_data.model, request_data.stream, e.status_code, _req_start_time, str(e.detail)[:200])
+        logger.error(f"HTTP {e.status_code} - POST /v1/responses - {e.detail}")
+        raise
+    except Exception as e:
+        await http_client.close()
+        _record_history(request, request_data.model, request_data.stream, 500, _req_start_time, str(e)[:200])
+        logger.error(f"Internal error: {e}", exc_info=True)
+        logger.error(f"HTTP 500 - POST /v1/responses - {str(e)[:100]}")
+        raise HTTPException(status_code=500, detail=str(e))
