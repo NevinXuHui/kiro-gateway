@@ -243,12 +243,28 @@ main() {
     done
     kill_port "$BACKEND_PORT" "Backend"
 
-    # 清理函数：退出时关闭 Task UI
+    # 清理函数：退出时关闭所有进程
     cleanup() {
+        echo
+        print_info "正在清理所有进程..."
+
+        # 关闭 Task UI
         if [ -n "$TASK_UI_PID" ]; then
             print_info "关闭 Task UI (PID: $TASK_UI_PID)..."
             kill "$TASK_UI_PID" 2>/dev/null || true
         fi
+
+        # 强制清理所有相关进程
+        # 1. 清理 Task UI 相关的 node/vite 进程
+        pkill -f "vite.*8991" 2>/dev/null || true
+
+        # 2. 清理后端进程（通过端口）
+        kill_port "$BACKEND_PORT" "Backend (cleanup)"
+
+        # 3. 清理可能残留的 Python 进程
+        pkill -f "python.*main.py" 2>/dev/null || true
+
+        print_info "清理完成"
     }
     trap cleanup EXIT INT TERM
 
