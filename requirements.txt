@@ -4,6 +4,7 @@ uvicorn[standard]
 httpx
 loguru
 python-dotenv
+python-multipart
 tiktoken
 
 # Utility scripts dependencies (convert_tokens.py, etc.)
