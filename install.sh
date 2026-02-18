@@ -67,6 +67,45 @@ check_node() {
     return 0
 }
 
+# ─── 防火墙配置 ────────────────────────────────────────
+configure_firewall() {
+    step "配置防火墙..."
+
+    # 检测防火墙类型
+    if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
+        # firewalld (CentOS/RHEL/Fedora)
+        info "检测到 firewalld，正在配置..."
+        firewall-cmd --permanent --add-port=9000/tcp
+        firewall-cmd --permanent --add-port=8991/tcp
+        firewall-cmd --reload
+        info "firewalld 规则已添加 ✓"
+    elif command -v ufw &>/dev/null; then
+        # ufw (Ubuntu/Debian)
+        info "检测到 ufw，正在配置..."
+        ufw allow 9000/tcp comment "Kiro Gateway API"
+        ufw allow 8991/tcp comment "Kiro Gateway UI"
+        info "ufw 规则已添加 ✓"
+    elif command -v iptables &>/dev/null; then
+        # iptables (通用)
+        info "使用 iptables 配置..."
+        iptables -I INPUT -p tcp --dport 9000 -j ACCEPT
+        iptables -I INPUT -p tcp --dport 8991 -j ACCEPT
+
+        # 尝试保存规则
+        if command -v iptables-save &>/dev/null; then
+            if [[ -f /etc/sysconfig/iptables ]]; then
+                iptables-save > /etc/sysconfig/iptables
+            elif [[ -f /etc/iptables/rules.v4 ]]; then
+                iptables-save > /etc/iptables/rules.v4
+            fi
+        fi
+        info "iptables 规则已添加 ✓"
+    else
+        warn "未检测到防火墙，跳过配置"
+        warn "如需公网访问，请手动开放端口 9000 和 8991"
+    fi
+}
+
 # ─── 停止服务 ──────────────────────────────────────────
 stop_services() {
     step "停止现有服务..."
@@ -145,7 +184,7 @@ User=$CURRENT_USER
 Group=$CURRENT_GROUP
 WorkingDirectory=$PROJECT_DIR
 EnvironmentFile=-$PROJECT_DIR/.env
-ExecStart=$VENV_DIR/bin/python main.py
+ExecStart=$VENV_DIR/bin/python main.py --port 9000
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=60
@@ -169,8 +208,11 @@ EOF
 
 generate_ui_service() {
     step "生成前端服务文件..."
-    local npx_path
+    local npx_path node_path node_dir
     npx_path="$(command -v npx)"
+    node_path="$(command -v node)"
+    node_dir="$(dirname "$node_path")"
+
     cat > "/tmp/$SERVICE_UI" <<EOF
 [Unit]
 Description=Kiro Gateway Task UI
@@ -182,6 +224,7 @@ Type=simple
 User=$CURRENT_USER
 Group=$CURRENT_GROUP
 WorkingDirectory=$PROJECT_DIR/task-ui
+Environment="PATH=$node_dir:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ExecStart=$npx_path vite --host 0.0.0.0 --port 8991
 Restart=on-failure
 RestartSec=5
@@ -248,6 +291,25 @@ do_uninstall() {
     done
 
     systemctl daemon-reload
+    echo
+
+    # 清理防火墙规则
+    step "清理防火墙规则..."
+    if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
+        firewall-cmd --permanent --remove-port=9000/tcp 2>/dev/null || true
+        firewall-cmd --permanent --remove-port=8991/tcp 2>/dev/null || true
+        firewall-cmd --reload
+        info "firewalld 规则已清理"
+    elif command -v ufw &>/dev/null; then
+        ufw delete allow 9000/tcp 2>/dev/null || true
+        ufw delete allow 8991/tcp 2>/dev/null || true
+        info "ufw 规则已清理"
+    elif command -v iptables &>/dev/null; then
+        iptables -D INPUT -p tcp --dport 9000 -j ACCEPT 2>/dev/null || true
+        iptables -D INPUT -p tcp --dport 8991 -j ACCEPT 2>/dev/null || true
+        info "iptables 规则已清理"
+    fi
+
     info "卸载完成 ✓"
 }
 
@@ -303,22 +365,45 @@ do_install() {
     install_services
     echo
 
-    # 7. 重启服务
+    # 7. 配置防火墙
+    configure_firewall
+    echo
+
+    # 8. 重启服务
     enable_and_start
     echo
 
     # 清理临时文件
     rm -f "/tmp/$SERVICE_BACKEND" "/tmp/$SERVICE_UI"
 
+    # 获取服务器 IP 地址
+    local server_ip
+    server_ip=$(hostname -I | awk '{print $1}')
+    if [[ -z "$server_ip" ]]; then
+        server_ip=$(ip route get 1 | awk '{print $7; exit}' 2>/dev/null || echo "localhost")
+    fi
+
     info "========================================="
     info "  安装完成！"
     info "========================================="
     echo
-    info "后端服务: systemctl status $SERVICE_BACKEND"
+    info "服务状态:"
+    info "  后端服务: systemctl status $SERVICE_BACKEND"
     if [[ "$HAS_NODE" == true ]]; then
-        info "前端服务: systemctl status $SERVICE_UI"
+        info "  前端服务: systemctl status $SERVICE_UI"
     fi
-    info "查看日志: journalctl -u $SERVICE_BACKEND -f"
+    info "  查看日志: journalctl -u $SERVICE_BACKEND -f"
+    echo
+    info "访问地址:"
+    info "  后端 API: http://$server_ip:9000"
+    if [[ "$HAS_NODE" == true ]]; then
+        info "  前端管理: http://$server_ip:8991"
+        echo
+        info "首次访问前端需要导入凭据："
+        info "  1. 浏览器打开 http://$server_ip:8991"
+        info "  2. 点击「导入凭据」按钮"
+        info "  3. 上传 .env 文件或手动输入配置"
+    fi
     echo
     info "管理命令:"
     info "  sudo $0 --status     查看状态"

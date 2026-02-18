@@ -12,13 +12,14 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '0.0.0.0',
+    allowedHosts: ['us.nevinxu.asia', '.nevinxu.asia'],
     proxy: {
       '/v1': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:9000',
         changeOrigin: true,
       },
       '/api': {
-        target: 'http://localhost:8000',
+        target: 'http://localhost:9000',
         changeOrigin: true,
       },
     },
