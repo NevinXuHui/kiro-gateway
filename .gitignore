@@ -39,6 +39,7 @@ tokens_export.json
 .history/
 .lh/
 .spec-workflow/
+.omc/
 run.sh
 convert_tokens.py
 
