@@ -45,12 +45,8 @@ export async function testConnectivity(): Promise<ConnectivityResult> {
   return data
 }
 
-export async function importCredentials(file: File): Promise<ImportCredentialsResult> {
-  const formData = new FormData()
-  formData.append('file', file)
-  const { data } = await api.post<ImportCredentialsResult>('/credentials/import', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
+export async function importCredentials(credentials: string): Promise<ImportCredentialsResult> {
+  const { data } = await api.post<ImportCredentialsResult>('/credentials/import', { credentials })
   return data
 }
 

@@ -79,7 +79,7 @@ export interface ImportCredentialsResult {
 
 export interface ImportHistoryRecord {
   time: string
-  filename: string
+  source: string
   success: boolean
   auth_type?: string
   region?: string

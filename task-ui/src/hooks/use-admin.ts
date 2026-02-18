@@ -25,6 +25,8 @@ export function useRefreshCredentials() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['credentials'] })
       qc.invalidateQueries({ queryKey: ['gateway-status'] })
+      qc.invalidateQueries({ queryKey: ['usage'] })
+      qc.invalidateQueries({ queryKey: ['models'] })
     },
   })
 }
@@ -57,6 +59,8 @@ export function useImportCredentials() {
       qc.invalidateQueries({ queryKey: ['credentials'] })
       qc.invalidateQueries({ queryKey: ['gateway-status'] })
       qc.invalidateQueries({ queryKey: ['import-history'] })
+      qc.invalidateQueries({ queryKey: ['usage'] })
+      qc.invalidateQueries({ queryKey: ['models'] })
     },
   })
 }

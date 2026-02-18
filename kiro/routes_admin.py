@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 import cbor2
 import httpx
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Security, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, Security
 from fastapi.security import APIKeyHeader
 from loguru import logger
 
@@ -194,19 +194,17 @@ async def test_connectivity(request: Request):
         }
 
 
-@router.post("/credentials/import")
-async def import_credentials(request: Request, file: UploadFile = File(...)):
-    """Import credentials from uploaded JSON file and hot-reload into auth manager."""
-    if not file.filename or not file.filename.endswith(".json"):
-        raise HTTPException(status_code=400, detail="Only .json files are accepted")
+class ImportCredentialsRequest(BaseModel):
+    credentials: str  # JSON string
 
+
+@router.post("/credentials/import")
+async def import_credentials(request: Request, body: ImportCredentialsRequest):
+    """Import credentials from JSON string and hot-reload into auth manager."""
     try:
-        content = await file.read()
-        data = json.loads(content)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON file")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+        data = json.loads(body.credentials)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {str(e)}")
 
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="JSON root must be an object")
@@ -216,7 +214,7 @@ async def import_credentials(request: Request, file: UploadFile = File(...)):
         result = auth.import_credentials(data)
         record = {
             "time": datetime.now(timezone.utc).isoformat(),
-            "filename": file.filename,
+            "source": "web_ui",
             "success": True,
             "auth_type": result["auth_type"],
             "region": result["region"],
@@ -228,7 +226,7 @@ async def import_credentials(request: Request, file: UploadFile = File(...)):
     except Exception as e:
         record = {
             "time": datetime.now(timezone.utc).isoformat(),
-            "filename": file.filename,
+            "source": "web_ui",
             "success": False,
             "error": str(e),
         }

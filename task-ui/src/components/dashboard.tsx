@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
-import { Moon, Sun, Zap, LogOut, RefreshCw, Shield, Server, Wifi, Settings, LayoutGrid, Upload, Key, Trash2, Plus, Copy, Send, Clock } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Moon, Sun, Zap, LogOut, RefreshCw, Shield, Server, Wifi, Settings, LayoutGrid, Key, Trash2, Plus, Copy, Send, Clock } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -66,20 +66,24 @@ export function Dashboard({ onLogout }: DashboardProps) {
   const [chatMessage, setChatMessage] = useState('Hello, reply in one sentence.')
   const [chatEndpoint, setChatEndpoint] = useState<'openai' | 'anthropic'>('openai')
   const [chatStream, setChatStream] = useState(false)
+  const [credentialsJson, setCredentialsJson] = useState('')
   const chatTestMutation = useChatTest()
   const { data: historyData } = useHistory()
   const clearHistoryMutation = useClearHistory()
   const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set())
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleRefresh = () => queryClient.invalidateQueries()
-  const handleImportCredentials = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    importMutation.mutate(file, {
-      onSuccess: (r) => toast.success(`凭证导入成功 (${r.auth_type} / ${r.region})`),
+  const handleImportCredentials = () => {
+    if (!credentialsJson.trim()) {
+      toast.error('请输入凭证 JSON')
+      return
+    }
+    importMutation.mutate(credentialsJson.trim(), {
+      onSuccess: (r) => {
+        toast.success(`凭证导入成功 (${r.auth_type} / ${r.region})`)
+        setCredentialsJson('')
+      },
       onError: (err: any) => toast.error(err?.response?.data?.detail || '凭证导入失败'),
-      onSettled: () => { if (fileInputRef.current) fileInputRef.current.value = '' },
     })
   }
   const handleTokenRefresh = () => {
@@ -184,12 +188,23 @@ export function Dashboard({ onLogout }: DashboardProps) {
                     <div className="space-y-1"><p className="text-sm text-muted-foreground">Q Host</p><p className="font-medium text-xs break-all">{creds.q_host}</p></div>
                   </div>
                   <Button onClick={handleTokenRefresh} disabled={refreshMutation.isPending}>{refreshMutation.isPending ? '刷新中...' : '强制刷新 Token'}</Button>
-                  <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={importMutation.isPending}>
-                    <Upload className="h-4 w-4 mr-2" />{importMutation.isPending ? '导入中...' : '导入凭证'}
-                  </Button>
-                  <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImportCredentials} />
                 </div>
               ) : <p className="text-muted-foreground">加载中...</p>}
+            </CardContent>
+          </Card>
+          <Card>
+            <CardHeader><CardTitle className="text-base">导入凭证</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">粘贴 Kiro 凭证 JSON 内容</p>
+              <textarea
+                value={credentialsJson}
+                onChange={(e) => setCredentialsJson(e.target.value)}
+                placeholder='{"refreshToken": "...", "region": "us-east-1", ...}'
+                className="w-full h-32 rounded-md border border-input bg-background px-3 py-2 text-sm font-mono resize-y"
+              />
+              <Button onClick={handleImportCredentials} disabled={importMutation.isPending || !credentialsJson.trim()}>
+                {importMutation.isPending ? '导入中...' : '导入凭证'}
+              </Button>
             </CardContent>
           </Card>
           {importHistory?.history !== undefined && (
@@ -201,7 +216,7 @@ export function Dashboard({ onLogout }: DashboardProps) {
                   {importHistory.history.map((r, i) => (
                     <div key={i} className="flex items-center justify-between p-3 rounded-lg border text-sm">
                       <div className="space-y-0.5">
-                        <p className="font-medium">{r.filename}</p>
+                        <p className="font-medium">{r.source || 'web_ui'}</p>
                         <p className="text-xs text-muted-foreground">{new Date(r.time).toLocaleString('zh-CN')}</p>
                       </div>
                       <div className="flex items-center gap-2">
