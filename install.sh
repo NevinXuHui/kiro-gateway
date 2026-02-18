@@ -67,6 +67,37 @@ check_node() {
     return 0
 }
 
+# ─── 停止服务 ──────────────────────────────────────────
+stop_services() {
+    step "停止现有服务..."
+    local stopped=false
+
+    for svc in "$SERVICE_UI" "$SERVICE_BACKEND"; do
+        if systemctl is-active --quiet "$svc" 2>/dev/null; then
+            systemctl stop "$svc"
+            info "已停止 $svc"
+            stopped=true
+        fi
+    done
+
+    # 额外检查并杀掉可能残留的进程
+    local pids
+    pids=$(pgrep -f "kiro-gateway|main.py" || true)
+    if [[ -n "$pids" ]]; then
+        warn "发现残留进程，正在清理..."
+        pkill -f "kiro-gateway|main.py" || true
+        sleep 1
+        # 强制杀掉仍然存在的进程
+        pkill -9 -f "kiro-gateway|main.py" || true
+        info "残留进程已清理"
+        stopped=true
+    fi
+
+    if [[ "$stopped" == false ]]; then
+        info "没有运行中的服务"
+    fi
+}
+
 # ─── 依赖安装 ──────────────────────────────────────────
 setup_venv() {
     step "设置 Python 虚拟环境..."
@@ -74,10 +105,10 @@ setup_venv() {
         python3 -m venv "$VENV_DIR"
         info "虚拟环境已创建"
     fi
-    info "安装 Python 依赖..."
+    info "更新 Python 依赖..."
     "$VENV_DIR/bin/pip" install --upgrade pip -q
-    "$VENV_DIR/bin/pip" install -r "$PROJECT_DIR/requirements.txt" -q
-    info "Python 依赖安装完成 ✓"
+    "$VENV_DIR/bin/pip" install -r "$PROJECT_DIR/requirements.txt" --upgrade -q
+    info "Python 依赖更新完成 ✓"
 }
 
 setup_frontend() {
@@ -88,11 +119,9 @@ setup_frontend() {
         return 1
     fi
 
-    # 安装依赖
-    if [[ ! -d "$ui_dir/node_modules" ]]; then
-        info "安装前端依赖..."
-        (cd "$ui_dir" && npm install --silent)
-    fi
+    # 更新依赖
+    info "更新前端依赖..."
+    (cd "$ui_dir" && npm install --silent)
 
     # 构建生产版本
     info "构建前端生产版本..."
@@ -192,16 +221,16 @@ install_services() {
 }
 
 enable_and_start() {
-    step "启用并启动服务..."
+    step "启用并重启服务..."
 
     systemctl enable "$SERVICE_BACKEND"
-    systemctl start "$SERVICE_BACKEND"
-    info "$SERVICE_BACKEND 已启用并启动 ✓"
+    systemctl restart "$SERVICE_BACKEND"
+    info "$SERVICE_BACKEND 已启用并重启 ✓"
 
     if [[ -f "$SYSTEMD_DIR/$SERVICE_UI" ]]; then
         systemctl enable "$SERVICE_UI"
-        systemctl start "$SERVICE_UI"
-        info "$SERVICE_UI 已启用并启动 ✓"
+        systemctl restart "$SERVICE_UI"
+        info "$SERVICE_UI 已启用并重启 ✓"
     fi
 }
 
@@ -242,11 +271,19 @@ do_install() {
     info "========================================="
     echo
 
+    # 1. 停止现有服务
+    stop_services
+    echo
+
+    # 2. 检查环境
     check_python
     echo
+
+    # 3. 更新 Python 依赖
     setup_venv
     echo
 
+    # 4. 更新前端依赖并构建
     HAS_NODE=false
     if check_node; then
         HAS_NODE=true
@@ -255,14 +292,18 @@ do_install() {
     fi
     echo
 
+    # 5. 生成服务文件
     generate_backend_service
     if [[ "$HAS_NODE" == true ]]; then
         generate_ui_service
     fi
     echo
 
+    # 6. 安装服务
     install_services
     echo
+
+    # 7. 重启服务
     enable_and_start
     echo
 
