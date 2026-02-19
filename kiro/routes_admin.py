@@ -317,9 +317,23 @@ async def get_usage(request: Request):
 
 @router.get("/apikeys")
 async def list_apikeys(request: Request):
-    """List all API keys (key field masked)."""
+    """List all API keys (key field masked), including PROXY_API_KEY from .env."""
+    from kiro.config import PROXY_API_KEY
+
     manager = request.app.state.apikey_manager
-    return {"keys": manager.list_keys()}
+    keys = manager.list_keys()
+
+    # Add PROXY_API_KEY from .env as a special entry
+    env_key = {
+        "id": "env_default",
+        "name": "Default API Key (from .env)",
+        "key_preview": PROXY_API_KEY[:8] + "..." if len(PROXY_API_KEY) > 8 else PROXY_API_KEY,
+        "created_at": "N/A",
+        "enabled": True,
+    }
+
+    # Insert at the beginning
+    return {"keys": [env_key] + keys}
 
 
 @router.post("/apikeys", status_code=201)
