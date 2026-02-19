@@ -29,6 +29,7 @@ debug_logs*/
 kiro-credentials.json
 tokens_export.json
 debug*.json
+.machine_id
 
 # Project-specific
 _notes/

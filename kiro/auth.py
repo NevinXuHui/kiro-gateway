@@ -168,24 +168,26 @@ class KiroAuthManager:
         
         # Log initialized endpoints for diagnostics (helps with DNS issues like #58)
         logger.info(f"Auth manager initialized: region={region}, api_host={self._api_host}, q_host={self._q_host}")
-        
-        # Fingerprint for User-Agent
-        self._fingerprint = get_machine_fingerprint()
-        
+
         # Load credentials from SQLite if specified (takes priority over JSON)
         if sqlite_db:
             self._load_credentials_from_sqlite(sqlite_db)
         # Load credentials from JSON file if specified
         elif creds_file:
             self._load_credentials_from_file(creds_file)
-        
+
         # Determine auth type based on available credentials
         self._detect_auth_type()
+
+        # Fingerprint for User-Agent (after loading credentials)
+        # Generate fingerprint based on credential hash for stability
+        credential_hash = self._get_credential_hash()
+        self._fingerprint = get_machine_fingerprint(credential_hash)
     
     def _detect_auth_type(self) -> None:
         """
         Detects authentication type based on available credentials.
-        
+
         AWS SSO OIDC credentials contain clientId and clientSecret.
         Kiro Desktop credentials do not contain these fields.
         """
@@ -195,6 +197,38 @@ class KiroAuthManager:
         else:
             self._auth_type = AuthType.KIRO_DESKTOP
             logger.info("Detected auth type: Kiro Desktop")
+
+    def _get_credential_hash(self) -> str:
+        """
+        生成当前凭证的哈希值，用于机器指纹绑定。
+
+        Generates a hash of current credentials for machine fingerprint binding.
+
+        Returns:
+            SHA256 hash of credentials (or empty string if no credentials)
+        """
+        import hashlib
+
+        # 收集关键凭证字段
+        # Collect key credential fields
+        credential_parts = []
+
+        if self._refresh_token:
+            credential_parts.append(f"refresh:{self._refresh_token}")
+        if self._client_id:
+            credential_parts.append(f"client_id:{self._client_id}")
+        if self._client_secret:
+            credential_parts.append(f"client_secret:{self._client_secret}")
+        if self._profile_arn:
+            credential_parts.append(f"profile:{self._profile_arn}")
+
+        if not credential_parts:
+            return ""
+
+        # 生成哈希
+        # Generate hash
+        credential_string = "|".join(credential_parts)
+        return hashlib.sha256(credential_string.encode()).hexdigest()[:16]
     
     def _load_credentials_from_sqlite(self, db_path: str) -> None:
         """
@@ -879,6 +913,12 @@ class KiroAuthManager:
                 logger.warning(f"Failed to parse expiresAt during import: {e}")
 
         self._detect_auth_type()
+
+        # 更新机器指纹（凭证变更时生成新指纹）
+        # Update machine fingerprint (generate new fingerprint on credential change)
+        credential_hash = self._get_credential_hash()
+        self._fingerprint = get_machine_fingerprint(credential_hash)
+        logger.info(f"Machine fingerprint updated for new credentials")
 
         # Persist to kiro-credentials.json
         persist_path = Path("kiro-credentials.json")

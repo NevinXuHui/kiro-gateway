@@ -35,27 +35,79 @@ if TYPE_CHECKING:
     from kiro.auth import KiroAuthManager
 
 
-def get_machine_fingerprint() -> str:
+def get_machine_fingerprint(credential_hash: str = None) -> str:
     """
-    Generates a unique machine fingerprint based on hostname and username.
-    
-    Used for User-Agent formation to identify a specific gateway installation.
-    
+    生成或加载与凭证绑定的机器指纹。
+
+    - 导入新凭证时：生成新的随机指纹
+    - 重启服务时：如果凭证未变，加载相同的指纹
+    - 凭证变更时：生成新的指纹
+
+    Generates or loads a machine fingerprint bound to credentials.
+    - On new credential import: generates new random fingerprint
+    - On service restart: loads same fingerprint if credentials unchanged
+    - On credential change: generates new fingerprint
+
+    Args:
+        credential_hash: Hash of current credentials (optional)
+
     Returns:
-        SHA256 hash of the string "{hostname}-{username}-kiro-gateway"
+        32-character hexadecimal string (random UUID hash)
     """
+    from pathlib import Path
+
+    machine_id_file = Path(".machine_id")
+
     try:
-        import socket
-        import getpass
-        
-        hostname = socket.gethostname()
-        username = getpass.getuser()
-        unique_string = f"{hostname}-{username}-kiro-gateway"
-        
-        return hashlib.sha256(unique_string.encode()).hexdigest()
+        # 如果提供了凭证哈希，检查是否需要重新生成
+        # If credential hash provided, check if regeneration needed
+        if credential_hash:
+            if machine_id_file.exists():
+                content = machine_id_file.read_text().strip()
+                if content:
+                    lines = content.split('\n')
+                    if len(lines) == 2:
+                        stored_hash, stored_fingerprint = lines
+                        # 凭证未变，返回现有指纹
+                        # Credentials unchanged, return existing fingerprint
+                        if stored_hash == credential_hash and len(stored_fingerprint) == 32:
+                            logger.debug(f"Loaded machine fingerprint for current credentials")
+                            return stored_fingerprint
+
+            # 凭证变更或首次导入，生成新指纹
+            # Credentials changed or first import, generate new fingerprint
+            random_uuid = uuid.uuid4()
+            fingerprint = hashlib.sha256(random_uuid.bytes).hexdigest()[:32]
+
+            # 保存凭证哈希和指纹
+            # Save credential hash and fingerprint
+            machine_id_file.write_text(f"{credential_hash}\n{fingerprint}")
+            logger.info(f"Generated new machine fingerprint for new credentials")
+
+            return fingerprint
+
+        # 无凭证哈希，尝试加载现有指纹（用于启动时）
+        # No credential hash, try to load existing fingerprint (for startup)
+        if machine_id_file.exists():
+            content = machine_id_file.read_text().strip()
+            if content:
+                lines = content.split('\n')
+                if len(lines) == 2:
+                    fingerprint = lines[1]
+                    if len(fingerprint) == 32:
+                        logger.debug(f"Loaded machine fingerprint from {machine_id_file}")
+                        return fingerprint
+
+        # 回退：生成临时随机指纹（不保存）
+        # Fallback: generate temporary random fingerprint (not saved)
+        logger.warning("No saved fingerprint found, using temporary random fingerprint")
+        return hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:32]
+
     except Exception as e:
-        logger.warning(f"Failed to get machine fingerprint: {e}")
-        return hashlib.sha256(b"default-kiro-gateway").hexdigest()
+        logger.warning(f"Failed to get/save machine fingerprint: {e}")
+        # 回退到随机生成（不保存）
+        # Fallback to random generation (not saved)
+        return hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:32]
 
 
 def get_kiro_headers(auth_manager: "KiroAuthManager", token: str) -> dict:
