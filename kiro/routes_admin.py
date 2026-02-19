@@ -247,7 +247,8 @@ async def get_usage(request: Request):
     auth = request.app.state.auth_manager
     access_token = auth._access_token
     if not access_token:
-        raise HTTPException(status_code=400, detail="No valid access token")
+        # Return empty usage instead of error when no credentials
+        return {"limit": 0, "used": 0, "remaining": 0}
 
     url = "https://app.kiro.dev/service/KiroWebPortalService/operation/GetUserUsageAndLimits"
     payload = {"isEmailRequired": True, "origin": "KIRO_IDE"}
@@ -264,13 +265,31 @@ async def get_usage(request: Request):
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
+            logger.debug(f"Usage API request: POST {url}")
+            logger.debug(f"Headers: {headers}")
+            logger.debug(f"Payload: {payload}")
+
             resp = await client.post(url, headers=headers, content=cbor2.dumps(payload))
+
+            logger.debug(f"Usage API response: {resp.status_code}")
+            logger.debug(f"Response headers: {dict(resp.headers)}")
+            logger.debug(f"Response content length: {len(resp.content)} bytes")
+
         if resp.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Kiro API returned {resp.status_code}")
+            logger.warning(f"Kiro API returned {resp.status_code} for usage query")
+            try:
+                error_data = cbor2.loads(resp.content)
+                logger.warning(f"Error response data: {error_data}")
+            except Exception:
+                logger.warning(f"Error response (raw): {resp.content[:200]}")
+            return {"limit": 0, "used": 0, "remaining": 0}
 
         data = cbor2.loads(resp.content)
+        logger.debug(f"Usage data: {data}")
+
         if "__type" in data:
-            raise HTTPException(status_code=502, detail="Kiro API error response")
+            logger.warning(f"Kiro API error response for usage query: {data}")
+            return {"limit": 0, "used": 0, "remaining": 0}
 
         usage_list = data.get("usageBreakdownList", [])
         credit = next((i for i in usage_list if i.get("resourceType") == "CREDIT"), None)
@@ -289,11 +308,9 @@ async def get_usage(request: Request):
         total_used = base_used + trial_used
         return {"limit": total_limit, "used": total_used, "remaining": total_limit - total_used}
 
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Failed to query usage: {e}")
-        raise HTTPException(status_code=500, detail=f"Usage query failed: {str(e)}")
+        return {"limit": 0, "used": 0, "remaining": 0}
 
 
 # --- API Key Management Endpoints ---
