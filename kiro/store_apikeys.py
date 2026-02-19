@@ -161,8 +161,20 @@ class ApiKeyManager:
         return True
 
     def verify_key(self, bearer_token: str) -> bool:
-        """Verify a bearer token against all enabled keys."""
+        """
+        Verify a bearer token against all enabled keys and PROXY_API_KEY.
+
+        Checks:
+        1. PROXY_API_KEY from .env (always valid)
+        2. Dynamically created keys in apikeys.json (if enabled)
+        """
+        # Check PROXY_API_KEY from .env first
+        if bearer_token == PROXY_API_KEY:
+            return True
+
+        # Check dynamically created keys
         for entry in self._keys.values():
             if entry.enabled and entry.key == bearer_token:
                 return True
+
         return False

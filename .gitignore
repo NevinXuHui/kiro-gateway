@@ -25,6 +25,10 @@ ENV/
 # Debug logs (generated when DEBUG_MODE is enabled)
 debug_logs*/
 
+# Log files
+*.log
+logs/
+
 # Sensitive credentials and tokens
 kiro-credentials.json
 tokens_export.json
