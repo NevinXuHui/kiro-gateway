@@ -323,36 +323,45 @@ export function Dashboard({ onLogout }: DashboardProps) {
                             <Copy className="h-3 w-3" />
                           </button>
                         </div>
-                        <p className="text-xs text-muted-foreground">{new Date(k.created_at).toLocaleString('zh-CN')}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {k.created_at === 'N/A' ? 'N/A' : new Date(k.created_at).toLocaleString('zh-CN')}
+                        </p>
                       </div>
                       <div className="flex items-center gap-3">
-                        <button
-                          onClick={() => updateApiKeyMutation.mutate({ id: k.id, updates: { enabled: !k.enabled } }, {
-                            onSuccess: () => toast.success(k.enabled ? 'Key 已禁用' : 'Key 已启用'),
-                            onError: () => toast.error('更新失败'),
-                          })}
-                          className="flex items-center gap-2"
-                        >
-                          <span className={`text-xs font-medium ${k.enabled ? 'text-green-500' : 'text-muted-foreground'}`}>{k.enabled ? '启用' : '禁用'}</span>
-                          <span className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${k.enabled ? 'bg-green-500' : 'bg-muted'}`}>
-                            <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${k.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                          </span>
-                        </button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive"
-                          onClick={() => {
-                            if (confirm('确定要删除此 API Key 吗？')) {
-                              deleteApiKeyMutation.mutate(k.id, {
-                                onSuccess: () => toast.success('Key 已删除'),
-                                onError: () => toast.error('删除失败'),
-                              })
-                            }
-                          }}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        {k.id !== 'env_default' && (
+                          <>
+                            <button
+                              onClick={() => updateApiKeyMutation.mutate({ id: k.id, updates: { enabled: !k.enabled } }, {
+                                onSuccess: () => toast.success(k.enabled ? 'Key 已禁用' : 'Key 已启用'),
+                                onError: () => toast.error('更新失败'),
+                              })}
+                              className="flex items-center gap-2"
+                            >
+                              <span className={`text-xs font-medium ${k.enabled ? 'text-green-500' : 'text-muted-foreground'}`}>{k.enabled ? '启用' : '禁用'}</span>
+                              <span className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${k.enabled ? 'bg-green-500' : 'bg-muted'}`}>
+                                <span className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${k.enabled ? 'translate-x-6' : 'translate-x-1'}`} />
+                              </span>
+                            </button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-destructive hover:text-destructive"
+                              onClick={() => {
+                                if (confirm('确定要删除此 API Key 吗？')) {
+                                  deleteApiKeyMutation.mutate(k.id, {
+                                    onSuccess: () => toast.success('Key 已删除'),
+                                    onError: () => toast.error('删除失败'),
+                                  })
+                                }
+                              }}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </>
+                        )}
+                        {k.id === 'env_default' && (
+                          <span className="text-xs text-muted-foreground">默认密钥（不可修改）</span>
+                        )}
                       </div>
                     </div>
                   ))}
