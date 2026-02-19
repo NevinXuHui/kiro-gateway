@@ -51,7 +51,7 @@ class UpdateApiKeyRequest(BaseModel):
     enabled: bool | None = None
 
 
-router = APIRouter(prefix="/api/admin", dependencies=[Depends(verify_api_key)])
+router = APIRouter(prefix="/api/admin")
 
 # Track server start time
 _start_time = time.time()
